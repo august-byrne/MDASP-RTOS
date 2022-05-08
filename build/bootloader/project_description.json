@@ -1,8 +1,8 @@
 {
     "project_name":       "bootloader",
     "project_path":       "C:/Users/August/esp/esp-idf/components/bootloader/subproject",
-    "build_dir":          "C:/Users/August/VisualStudioProjects/i2s_basic/build/bootloader",
-    "config_file":        "C:/Users/August/VisualStudioProjects/i2s_basic/sdkconfig",
+    "build_dir":          "C:/Users/August/VisualStudioProjects/MDASP/build/bootloader",
+    "config_file":        "C:/Users/August/VisualStudioProjects/MDASP/sdkconfig",
     "config_defaults":    "",
     "app_elf":            "bootloader.elf",
     "app_bin":            "bootloader.bin",

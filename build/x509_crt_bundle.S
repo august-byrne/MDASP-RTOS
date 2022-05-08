@@ -1,4 +1,4 @@
-/* * Data converted from C:/Users/August/VisualStudioProjects/i2s_basic/build/esp-idf/mbedtls/x509_crt_bundle
+/* * Data converted from C:/Users/August/VisualStudioProjects/MDASP/build/esp-idf/mbedtls/x509_crt_bundle
  */
 .data
 .section .rodata.embedded

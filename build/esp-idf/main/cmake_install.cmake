@@ -1,4 +1,4 @@
-# Install script for directory: C:/Users/August/VisualStudioProjects/i2s_basic/main
+# Install script for directory: C:/Users/August/VisualStudioProjects/MDASP/main
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
