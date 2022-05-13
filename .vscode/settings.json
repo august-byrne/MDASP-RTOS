@@ -5,7 +5,11 @@
     "esp_system.h": "c",
     "esp_dsp.h": "c",
     "esp_log.h": "c",
-    "array": "c"
+    "array": "c",
+    "compressor.h": "c",
+    "ratio": "c",
+    "memory": "c",
+    "*.ipp": "c"
   },
   "idf.portWin": "COM3",
   "idf.adapterTargetName": "esp32",
