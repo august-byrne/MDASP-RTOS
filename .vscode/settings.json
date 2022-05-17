@@ -9,7 +9,9 @@
     "compressor.h": "c",
     "ratio": "c",
     "memory": "c",
-    "*.ipp": "c"
+    "*.ipp": "c",
+    "semphr.h": "c",
+    "dsps_biquad.h": "c"
   },
   "idf.portWin": "COM3",
   "idf.adapterTargetName": "esp32",

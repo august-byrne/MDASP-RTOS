@@ -8,7 +8,7 @@
 #ifndef SNDFILTER_COMPRESSOR__H
 #define SNDFILTER_COMPRESSOR__H
 
-#include "snd.h"
+//#include "snd.h"
 
 // dynamic range compression is a complex topic with many different algorithms
 //
@@ -39,6 +39,11 @@
 
 // not sure what this does exactly, but it is part of the release curve
 #define SF_COMPRESSOR_SPACINGDB  5.0f
+
+typedef struct {
+	float L; // left channel sample
+	float R; // right channel sample
+} sf_sample_st;
 
 typedef struct {
 	// user can read the metergain state variable after processing a chunk to see how much dB the

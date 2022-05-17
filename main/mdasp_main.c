@@ -8,10 +8,7 @@
 #include <math.h>
 #include "hal/i2s_hal.h"
 #include "esp_dsp.h"
-//#include "compressor/compressor.c"
 #include "compressor/compressor.h"
-//#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-//#include "esp_log.h"
  
 
 #define AUDIO_SAMPLE_RATE   48000         //48kHz
@@ -24,7 +21,6 @@
 
 
 typedef struct ParametricEQ {
-    bool consumable_update;
     bool passthrough;
     bool hp;    // high pass
     bool hs;    // high shelf
@@ -45,7 +41,6 @@ typedef struct ParametricEQ {
 } ParametricEQ;
 
 typedef struct SimpleCompressor {
-    bool consumable_update;
     bool passthrough;
 
     float pregain;
@@ -60,6 +55,8 @@ typedef struct SimpleCompressor {
 int16_t rxbuf[BUFF_LEN*4], txbuf[BUFF_LEN*4];    // # of bytes = sizebuf_len * (bits_per_sample / 8) * buf_count * num_of_channels; 1024 works best so far
 float l_in[BUFF_LEN*2], r_in[BUFF_LEN*2];
 
+float l_dsp_buff[BUFF_LEN*2], r_dsp_buff[BUFF_LEN*2];   // REPLACE ALL BUFFERS WITH SINGLE L and R BUFF
+
 // EQ Variables
 float w1[2], w2[2];
 //filter buffers
@@ -69,8 +66,7 @@ float l_buff_drc[BUFF_LEN*2], r_buff_drc[BUFF_LEN*2];
 //volume buffers
 float l_out[BUFF_LEN*2], r_out[BUFF_LEN*2];
 
-ParametricEQ paramEQ = {
-    .consumable_update = true,
+ParametricEQ paramEQModel = {
     .passthrough = false,
     .hp = false,
     .hs = false,
@@ -78,8 +74,8 @@ ParametricEQ paramEQ = {
     .lp = false,
     .ls = false,
     .gain = 1.0f,
-    .hp_freq = 0f,
-    .hs_freq = 0f,
+    .hp_freq = 0.0f,
+    .hs_freq = 0.0f,
     .br_freq = 0.25f,
     .lp_freq = 0.5f,
     .ls_freq = 0.5f,
@@ -88,50 +84,33 @@ ParametricEQ paramEQ = {
     .ls_amount = 1.0f
     };
 
+bool paramEqUpdate = true;
+
 float hp_coeffs[2][5];
 float hs_coeffs[2][5];
 float br_coeffs[2][5];
 float lp_coeffs[2][5];
 float ls_coeffs[2][5];
 
-/* static const float BUTTER_Q[10] = {  // Biquad Q values for cascading to obtain a butterworth response
-    0.50154610,
-    0.51420760,
-    0.54119610,
-    0.58641385,
-    0.65754350,
-    0.76988452,
-    0.95694043,
-    1.3065630,
-    2.1418288,
-    6.3727474};  // Q values required for a 20th order butterworth equivalent */
-
-/* static const float SHORT_BUTTER_Q[6] = {  // Biquad Q values for cascading to obtain a 12th order butterworth response
-    0.50431448,
-    0.54119610,
-    0.63023621,
-    0.82133982,
-    1.3065630,
-    3.8306488}; */
-
 static const float CASC_BUTTER_Q[2] = {0.54119610, 1.3065630}; // biquad Q values to obtain 4th order butterworth response
 
 sf_compressor_state_st compState;
 
-SimpleCompressor compressor = {
-    .consumable_update = true,
+SimpleCompressor compressorModel = {
     .passthrough = false,
     .pregain = 5.0f,
     .threshold = -24.0f,
     .knee = 30.0f,
-    .ratio = 12.0f
+    .ratio = 12.0f,
     .attack = 0.003f,
     .release = 0.250f
     };
 
+bool drcUpdate = true;
+
 /******************************************************************************************/
  
-static void i2s_passthrough(void *args) {
+static void i2s_audio_processor(void *args) {
     size_t read_size;
     size_t write_size;
     esp_err_t dsp_err;
@@ -140,8 +119,13 @@ static void i2s_passthrough(void *args) {
     int BUF_SIZE = sizeof(l_in);
     int BUF_BYTES = sizeof(rxbuf);
 
-    paramEQ.lp = true;
-    paramEQ.lp_freq = 0.1f;
+    SimpleCompressor compressor;
+    sf_sample_st inCompBuff[BUF_SIZE];
+    sf_sample_st outCompBuff[BUF_SIZE];
+    ParametricEQ paramEQ;
+    paramEQModel.lp = true;
+    paramEQModel.lp_freq = 0.1f;
+    compressorModel.passthrough = true;
 
     while (1) {
 
@@ -158,19 +142,21 @@ static void i2s_passthrough(void *args) {
             }
 
             // Generate IIR Coefficients for 4th order Butterworth Filters
-            if (paramEQ.consumable_update) {
-                paramEQ.consumable_update = false; // mutex write
+            if (paramEqUpdate) {
+                paramEQ = paramEQModel;
+                paramEqUpdate = false; // mutex write
                 for (int i = 0; i < 2; i++) {
-                    dsps_biquad_gen_hpf_f32(&hp_coeffs[i][0], paramEQ.hp_freq, BUTTER_Q[i]);
-                    dsps_biquad_gen_highShelf_f32(&hs_coeffs[i][0], paramEQ.hs_freq, paramEQ.hs_amount, BUTTER_Q[i]);
-                    dsps_biquad_gen_notch_f32(&br_coeffs[i][0], paramEQ.br_freq, paramEQ.br_amount, BUTTER_Q[i]);
-                    dsps_biquad_gen_lowShelf_f32(&ls_coeffs[i][0], paramEQ.ls_freq, paramEQ.ls_amount, BUTTER_Q[i]);
-                    dsps_biquad_gen_lpf_f32(&lp_coeffs[i][0], paramEQ.lp_freq, BUTTER_Q[i]);
+                    dsps_biquad_gen_hpf_f32(&hp_coeffs[i][0], paramEQ.hp_freq, CASC_BUTTER_Q[i]);
+                    dsps_biquad_gen_highShelf_f32(&hs_coeffs[i][0], paramEQ.hs_freq, paramEQ.hs_amount, CASC_BUTTER_Q[i]);
+                    dsps_biquad_gen_notch_f32(&br_coeffs[i][0], paramEQ.br_freq, paramEQ.br_amount, CASC_BUTTER_Q[i]);
+                    dsps_biquad_gen_lowShelf_f32(&ls_coeffs[i][0], paramEQ.ls_freq, paramEQ.ls_amount, CASC_BUTTER_Q[i]);
+                    dsps_biquad_gen_lpf_f32(&lp_coeffs[i][0], paramEQ.lp_freq, CASC_BUTTER_Q[i]);
                 }
             }
-            // Generate 
-            if (compressor.consumable_update) {
-                compressor.consumable_update = false;
+            // Generate DRC values
+            if (drcUpdate) {
+                compressor = compressorModel;
+                drcUpdate = false;
                 sf_simplecomp(
                     &compState, 
                     AUDIO_SAMPLE_RATE,
@@ -228,13 +214,16 @@ static void i2s_passthrough(void *args) {
 
             }
 
-
-            // CREATE DRC HERE
+            // DRC Section
             memcpy(l_buff_drc, l_buff_eq, BUF_SIZE);
             memcpy(r_buff_drc, r_buff_eq, BUF_SIZE);
-            //sf_compressor_process(sf_compressor_state_st *state, BUF_SIZE, &l_buff_eq[0], &l_buff_drc[0]);
-            //sf_compressor_process(sf_compressor_state_st *state, BUF_SIZE, &l_buff_eq[0], &l_buff_drc[0]);
-
+            if (!compressor.passthrough) {
+                memcpy(&inCompBuff[0].L, l_buff_eq, BUF_SIZE);
+                memcpy(&inCompBuff[0].R, r_buff_eq, BUF_SIZE);
+                sf_compressor_process(&compState, BUF_SIZE, inCompBuff, outCompBuff);
+                memcpy(l_buff_drc, &outCompBuff[0].L, BUF_SIZE);
+                memcpy(r_buff_drc, &outCompBuff[0].R, BUF_SIZE);
+            }
 
             // Post DRC Gain Section
             memcpy(l_out, l_buff_drc, BUF_SIZE);
@@ -248,7 +237,7 @@ static void i2s_passthrough(void *args) {
                 y = y+2;
             }
         
-            //write 4096 samples to DMA_out
+            //write BUF_SIZE samples to DMA_out
             write_ret = i2s_write(I2S_NUM, &txbuf[0], BUF_BYTES, &write_size, portMAX_DELAY);
             if (write_ret != ESP_OK || write_size != BUF_BYTES) {
                 printf("i2s write failed. write status %d, written bytes %d\n", write_ret, write_size);
@@ -257,6 +246,11 @@ static void i2s_passthrough(void *args) {
             printf("i2s read failed. read status %d, read bytes %d\n", read_ret, read_size);
         }
     }
+}
+
+static void bt_gatt_server(void *args) {
+
+
 }
 
 void app_main(void) {
@@ -285,7 +279,8 @@ void app_main(void) {
     
     // You can reset parameters by calling 'i2s_set_clk'
 
-    xTaskCreate(i2s_passthrough, "i2s_passthrough", 4096, NULL, 2, NULL);
+    xTaskCreate(i2s_audio_processor, "i2s_audio_processor", 4096, NULL, 2, NULL);
+    xTaskCreate(bt_gatt_server, "bt_gatt_server", 4096, NULL, 1, NULL);
 /*     while (1) {
         i2s_event_t evt;
         xQueueReceive(evt_que, &evt, portMAX_DELAY);
