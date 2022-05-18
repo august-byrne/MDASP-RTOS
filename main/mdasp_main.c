@@ -12,8 +12,11 @@
  
 
 #define AUDIO_SAMPLE_RATE   48000         //48kHz
-#define BUFF_LEN            256           //buffer length
+#define BUF_LEN             256           //buffer length
+#define BUF_LEN_STEREO     BUF_LEN*2    //buffer length * 2 channels (stereo)
+#define BUF_BYTES    BUF_LEN_STEREO*2    //stereo buffer size * 16-bit (2 bytes)
 #define I2S_NUM             I2S_NUM_0     //i2s port number
+#define I2S_MCK_IO          GPIO_NUM_3    //i2s master clock
 #define I2S_BCK_IO          GPIO_NUM_15   //i2s bit clock
 #define I2S_WS_IO           GPIO_NUM_13   //i2s word select
 #define I2S_DO_IO           GPIO_NUM_2    //i2s data out
@@ -52,19 +55,12 @@ typedef struct SimpleCompressor {
 } SimpleCompressor;
 
 // Audio Buffer Variables
-int16_t rxbuf[BUFF_LEN*4], txbuf[BUFF_LEN*4];    // # of bytes = sizebuf_len * (bits_per_sample / 8) * buf_count * num_of_channels; 1024 works best so far
-float l_in[BUFF_LEN*2], r_in[BUFF_LEN*2];
+int16_t rxbuf[BUF_LEN_STEREO], txbuf[BUF_LEN_STEREO];    // stereo samples
 
-float l_dsp_buff[BUFF_LEN*2], r_dsp_buff[BUFF_LEN*2];   // REPLACE ALL BUFFERS WITH SINGLE L and R BUFF
-
-// EQ Variables
-float w1[2], w2[2];
-//filter buffers
-float l_buff_eq[BUFF_LEN*2], r_buff_eq[BUFF_LEN*2];
-//drc buffers
-float l_buff_drc[BUFF_LEN*2], r_buff_drc[BUFF_LEN*2];
-//volume buffers
-float l_out[BUFF_LEN*2], r_out[BUFF_LEN*2];
+float l_dsp_buff[BUF_LEN], r_dsp_buff[BUF_LEN];
+sf_sample_st inCompBuff[BUF_LEN];
+sf_sample_st outCompBuff[BUF_LEN];
+size_t BUF_SIZE = sizeof(l_dsp_buff);
 
 ParametricEQ paramEQModel = {
     .passthrough = false,
@@ -116,16 +112,17 @@ static void i2s_audio_processor(void *args) {
     esp_err_t dsp_err;
     esp_err_t read_ret;
     esp_err_t write_ret;
-    int BUF_SIZE = sizeof(l_in);
-    int BUF_BYTES = sizeof(rxbuf);
 
+    // EQ Variables
+    float w1[2][2], w2[2][2];
+    memset(w1, 0, sizeof(w1));
+    memset(w2, 0, sizeof(w2));
     SimpleCompressor compressor;
-    sf_sample_st inCompBuff[BUF_SIZE];
-    sf_sample_st outCompBuff[BUF_SIZE];
     ParametricEQ paramEQ;
     paramEQModel.lp = true;
-    paramEQModel.lp_freq = 0.1f;
-    compressorModel.passthrough = true;
+    paramEQModel.lp_freq = 0.05f;
+    compressorModel.passthrough = false;
+    paramEQModel.passthrough = true;
 
     while (1) {
 
@@ -135,9 +132,9 @@ static void i2s_audio_processor(void *args) {
 
             // extract stereo samples to mono buffers
             int y = 0;
-            for (int i = 0; i < BUF_BYTES; i = i+2) {
-                l_in[y] = (float) rxbuf[i];
-                r_in[y] = (float) rxbuf[i+1];
+            for (int i = 0; i < BUF_LEN_STEREO; i = i+2) {
+                l_dsp_buff[y] = (float) rxbuf[i];
+                r_dsp_buff[y] = (float) rxbuf[i+1];
                 y++;
             }
 
@@ -166,74 +163,51 @@ static void i2s_audio_processor(void *args) {
                     compressor.ratio,
                     compressor.attack,
                     compressor.release
-                    );
+                );
             }
 
             // Parametric EQ Filtering Section
-            memcpy(l_buff_eq, l_in, BUF_SIZE);
-            memcpy(r_buff_eq, r_in, BUF_SIZE);
             if (!paramEQ.passthrough) {
                 for (int i = 0; i < 2; i++) {
+                    dsps_mulc_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 0.75f, 1, 1);
+                    dsps_mulc_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 0.75f, 1, 1);
                     if (paramEQ.hp) {
-                        memset(w1, 0, sizeof(w1));
-                        memset(w2, 0, sizeof(w2));
-                        dsp_err = dsps_biquad_f32_ae32(&l_buff_eq[0], &l_buff_eq[0], BUF_SIZE, &hp_coeffs[i][0], &w1[0]);
-                        dsp_err = dsps_biquad_f32_ae32(&r_buff_eq[0], &r_buff_eq[0], BUF_SIZE, &hp_coeffs[i][0], &w2[0]);
+                        dsp_err = dsps_biquad_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hp_coeffs[i][0], &w1[i][0]);
+                        dsp_err = dsps_biquad_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hp_coeffs[i][0], &w2[i][0]);
                     }
                     if (paramEQ.hs) {
-                        memset(w1, 0, sizeof(w1));
-                        memset(w2, 0, sizeof(w2));
-                        dsp_err = dsps_biquad_f32_ae32(&l_buff_eq[0], &l_buff_eq[0], BUF_SIZE, &hs_coeffs[i][0], &w1[0]);
-                        dsp_err = dsps_biquad_f32_ae32(&r_buff_eq[0], &r_buff_eq[0], BUF_SIZE, &hs_coeffs[i][0], &w2[0]);
+                        dsp_err = dsps_biquad_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hs_coeffs[i][0], &w1[i][0]);
+                        dsp_err = dsps_biquad_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hs_coeffs[i][0], &w2[i][0]);
                     }
                     if (paramEQ.br) {
-                        memset(w1, 0, sizeof(w1));
-                        memset(w2, 0, sizeof(w2));
-                        dsp_err = dsps_biquad_f32_ae32(&l_buff_eq[0], &l_buff_eq[0], BUF_SIZE, &br_coeffs[i][0], &w1[0]);
-                        dsp_err = dsps_biquad_f32_ae32(&r_buff_eq[0], &r_buff_eq[0], BUF_SIZE, &br_coeffs[i][0], &w2[0]);
+                        dsp_err = dsps_biquad_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &br_coeffs[i][0], &w1[i][0]);
+                        dsp_err = dsps_biquad_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &br_coeffs[i][0], &w2[i][0]);
                     }
                     if (paramEQ.lp) {
-                        memset(w1, 0, sizeof(w1));
-                        memset(w2, 0, sizeof(w2));
-                        dsp_err = dsps_biquad_f32_ae32(&l_buff_eq[0], &l_buff_eq[0], BUF_SIZE, &lp_coeffs[i][0], &w1[0]);
-                        dsp_err = dsps_biquad_f32_ae32(&r_buff_eq[0], &r_buff_eq[0], BUF_SIZE, &lp_coeffs[i][0], &w2[0]);
+                        dsp_err = dsps_biquad_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &lp_coeffs[i][0], &w1[i][0]);
+                        dsp_err = dsps_biquad_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &lp_coeffs[i][0], &w2[i][0]);
                     }
                     if (paramEQ.ls) {
-                        memset(w1, 0, sizeof(w1));
-                        memset(w2, 0, sizeof(w2));
-                        dsp_err = dsps_biquad_f32_ae32(&l_buff_eq[0], &l_buff_eq[0], BUF_SIZE, &ls_coeffs[i][0], &w1[0]);
-                        dsp_err = dsps_biquad_f32_ae32(&r_buff_eq[0], &r_buff_eq[0], BUF_SIZE, &ls_coeffs[i][0], &w2[0]);
+                        dsp_err = dsps_biquad_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &ls_coeffs[i][0], &w1[i][0]);
+                        dsp_err = dsps_biquad_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &ls_coeffs[i][0], &w2[i][0]);
                     }
                 }
-
-                // Post EQ Gain Section
-                for(int i = 0; i < BUF_SIZE; i++) {
-                    l_buff_eq[i] = paramEQ.gain * l_buff_eq[i];
-                    r_buff_eq[i] = paramEQ.gain * r_buff_eq[i];
-                }
-
             }
 
             // DRC Section
-            memcpy(l_buff_drc, l_buff_eq, BUF_SIZE);
-            memcpy(r_buff_drc, r_buff_eq, BUF_SIZE);
             if (!compressor.passthrough) {
-                memcpy(&inCompBuff[0].L, l_buff_eq, BUF_SIZE);
-                memcpy(&inCompBuff[0].R, r_buff_eq, BUF_SIZE);
-                sf_compressor_process(&compState, BUF_SIZE, inCompBuff, outCompBuff);
-                memcpy(l_buff_drc, &outCompBuff[0].L, BUF_SIZE);
-                memcpy(r_buff_drc, &outCompBuff[0].R, BUF_SIZE);
+                memcpy(&inCompBuff[0].L, l_dsp_buff, BUF_SIZE);
+                memcpy(&inCompBuff[0].R, r_dsp_buff, BUF_SIZE);
+                sf_compressor_process(&compState, BUF_SIZE, &inCompBuff[0], &outCompBuff[0]);
+                memcpy(l_dsp_buff, &outCompBuff[0].L, BUF_SIZE);
+                memcpy(r_dsp_buff, &outCompBuff[0].R, BUF_SIZE);
             }
-
-            // Post DRC Gain Section
-            memcpy(l_out, l_buff_drc, BUF_SIZE);
-            memcpy(r_out, r_buff_drc, BUF_SIZE);
 
             //merge two l and r buffers into a mixed buffer and write back to HW
             y = 0;
-            for (int i = 0; i < BUF_SIZE; i++) {
-                txbuf[y] = (int16_t) l_out[i];
-                txbuf[y+1] = (int16_t) r_out[i];
+            for (int i = 0; i < BUF_LEN; i++) {
+                txbuf[y] = (int16_t) l_dsp_buff[i];
+                txbuf[y+1] = (int16_t) r_dsp_buff[i];
                 y = y+2;
             }
         
@@ -248,14 +222,16 @@ static void i2s_audio_processor(void *args) {
     }
 }
 
-static void bt_gatt_server(void *args) {
+/* static void bt_gatt_server(void *args) {
+    while (1) {
 
+    }
 
-}
+} */
 
 void app_main(void) {
     i2s_config_t i2s_config = {
-        .mode = (i2s_mode_t) I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_TX,
+        .mode = I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_TX,
         .sample_rate = AUDIO_SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
@@ -263,11 +239,11 @@ void app_main(void) {
         .tx_desc_auto_clear = true,
         .use_apll = true,
         .dma_buf_count = 8,
-        .dma_buf_len = BUFF_LEN,    // # frames per DMA buffer. frame size = # channels * bytes per sample
+        .dma_buf_len = 128,    // # frames per DMA buffer. frame size = # channels * bytes per sample
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1
     };
     i2s_pin_config_t pin_config = {
-        .mck_io_num = 3,
+        .mck_io_num = I2S_MCK_IO,
         .bck_io_num = I2S_BCK_IO,
         .ws_io_num = I2S_WS_IO,
         .data_out_num = I2S_DO_IO,
@@ -280,7 +256,7 @@ void app_main(void) {
     // You can reset parameters by calling 'i2s_set_clk'
 
     xTaskCreate(i2s_audio_processor, "i2s_audio_processor", 4096, NULL, 2, NULL);
-    xTaskCreate(bt_gatt_server, "bt_gatt_server", 4096, NULL, 1, NULL);
+    //xTaskCreate(bt_gatt_server, "bt_gatt_server", 4096, NULL, 1, NULL);
 /*     while (1) {
         i2s_event_t evt;
         xQueueReceive(evt_que, &evt, portMAX_DELAY);
