@@ -86,7 +86,7 @@ void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, floa
 		delaybufsize = 1;
 	else if (delaybufsize > SF_COMPRESSOR_MAXDELAY)
 		delaybufsize = SF_COMPRESSOR_MAXDELAY;
-        memset(state->delaybuf, 0, sizeof(sf_sample_st) * delaybufsize);
+    memset(state->delaybuf, 0, sizeof(sf_sample_st) * delaybufsize);
 
 	// useful values
 	float linearpregain = db2lin(pregain);
@@ -131,7 +131,7 @@ void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, floa
 
 	// calculate the adaptive release curve parameters
 	// solve a,b,c,d in `y = a*x^3 + b*x^2 + c*x + d`
-	// interescting points (0, y1), (1, y2), (2, y3), (3, y4)
+	// intersecting points (0, y1), (1, y2), (2, y3), (3, y4)
 	float y1 = releasesamples * releasezone1;
 	float y2 = releasesamples * releasezone2;
 	float y3 = releasesamples * releasezone3;

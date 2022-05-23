@@ -1,58 +1,16 @@
+#include "mdasp_main.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2s.h"
 #include "driver/gpio.h"
 #include "esp_system.h"
-#include <math.h>
 #include "hal/i2s_hal.h"
 #include "esp_dsp.h"
 #include "compressor/compressor.h"
- 
-
-#define AUDIO_SAMPLE_RATE   48000         //48kHz
-#define BUF_LEN             256           //buffer length
-#define BUF_LEN_STEREO     BUF_LEN*2    //buffer length * 2 channels (stereo)
-#define BUF_BYTES    BUF_LEN_STEREO*2    //stereo buffer size * 16-bit (2 bytes)
-#define I2S_NUM             I2S_NUM_0     //i2s port number
-#define I2S_MCK_IO          GPIO_NUM_3    //i2s master clock
-#define I2S_BCK_IO          GPIO_NUM_15   //i2s bit clock
-#define I2S_WS_IO           GPIO_NUM_13   //i2s word select
-#define I2S_DO_IO           GPIO_NUM_2    //i2s data out
-#define I2S_DI_IO           GPIO_NUM_0    //i2s data in
-
-
-typedef struct ParametricEQ {
-    bool passthrough;
-    bool hp;    // high pass
-    bool hs;    // high shelf
-    bool br;    // band reject
-    bool lp;    // low pass
-    bool ls;    // low shelf
-
-    float gain;
-    float hp_freq;
-    float hs_freq;
-    float br_freq;
-    float lp_freq;
-    float ls_freq;
-
-    float hs_amount;
-    float br_amount;
-    float ls_amount;
-} ParametricEQ;
-
-typedef struct SimpleCompressor {
-    bool passthrough;
-
-    float pregain;
-    float threshold;
-    float knee;
-    float ratio;
-    float attack;
-    float release;
-} SimpleCompressor;
+#include "bt_service.c"
 
 // Audio Buffer Variables
 int16_t rxbuf[BUF_LEN_STEREO], txbuf[BUF_LEN_STEREO];    // stereo samples
@@ -60,27 +18,7 @@ int16_t rxbuf[BUF_LEN_STEREO], txbuf[BUF_LEN_STEREO];    // stereo samples
 float l_dsp_buff[BUF_LEN], r_dsp_buff[BUF_LEN];
 sf_sample_st inCompBuff[BUF_LEN];
 sf_sample_st outCompBuff[BUF_LEN];
-size_t BUF_SIZE = sizeof(l_dsp_buff);
-
-ParametricEQ paramEQModel = {
-    .passthrough = false,
-    .hp = false,
-    .hs = false,
-    .br = false,
-    .lp = false,
-    .ls = false,
-    .gain = 1.0f,
-    .hp_freq = 0.0f,
-    .hs_freq = 0.0f,
-    .br_freq = 0.25f,
-    .lp_freq = 0.5f,
-    .ls_freq = 0.5f,
-    .hs_amount = 1.0f,
-    .br_amount = 1.0f,
-    .ls_amount = 1.0f
-    };
-
-bool paramEqUpdate = true;
+float l_dsp_buff_out[BUF_LEN], r_dsp_buff_out[BUF_LEN];
 
 float hp_coeffs[2][5];
 float hs_coeffs[2][5];
@@ -91,18 +29,6 @@ float ls_coeffs[2][5];
 static const float CASC_BUTTER_Q[2] = {0.54119610, 1.3065630}; // biquad Q values to obtain 4th order butterworth response
 
 sf_compressor_state_st compState;
-
-SimpleCompressor compressorModel = {
-    .passthrough = false,
-    .pregain = 5.0f,
-    .threshold = -24.0f,
-    .knee = 30.0f,
-    .ratio = 12.0f,
-    .attack = 0.003f,
-    .release = 0.250f
-    };
-
-bool drcUpdate = true;
 
 /******************************************************************************************/
  
@@ -117,12 +43,21 @@ static void i2s_audio_processor(void *args) {
     float w1[2][2], w2[2][2];
     memset(w1, 0, sizeof(w1));
     memset(w2, 0, sizeof(w2));
-    SimpleCompressor compressor;
+    AdvancedCompressor compressor;
     ParametricEQ paramEQ;
     paramEQModel.lp = true;
     paramEQModel.lp_freq = 0.05f;
-    compressorModel.passthrough = false;
+    paramEQModel.hp = true;
+    paramEQModel.hp_freq = 0.25f;
     paramEQModel.passthrough = true;
+    compressorModel.passthrough = true;
+    compressorModel.pregain = 12.0f;
+    compressorModel.postgain = 90.0f;
+    compressorModel.threshold = -64.0f;
+    compressorModel.knee = 40.0f;
+    compressorModel.ratio = 4.0f;
+    //compressorModel.attack = 0.002f;
+    //compressorModel.release = 0.01f;
 
     while (1) {
 
@@ -154,7 +89,7 @@ static void i2s_audio_processor(void *args) {
             if (drcUpdate) {
                 compressor = compressorModel;
                 drcUpdate = false;
-                sf_simplecomp(
+                sf_advancecomp(
                     &compState, 
                     AUDIO_SAMPLE_RATE,
                     compressor.pregain,
@@ -162,9 +97,20 @@ static void i2s_audio_processor(void *args) {
                     compressor.knee,
                     compressor.ratio,
                     compressor.attack,
-                    compressor.release
+                    compressor.release,
+                    compressor.predelay,
+                    compressor.releasezone1,
+                    compressor.releasezone2,
+                    compressor.releasezone3,
+                    compressor.releasezone4,
+                    compressor.postgain,
+                    compressor.wet
                 );
+                //sf_defaultcomp(&compState, AUDIO_SAMPLE_RATE);
             }
+
+            //dsps_mulc_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, MINUS_90_DB, 1, 1);
+            //dsps_mulc_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, MINUS_90_DB, 1, 1);
 
             // Parametric EQ Filtering Section
             if (!paramEQ.passthrough) {
@@ -194,24 +140,35 @@ static void i2s_audio_processor(void *args) {
                 }
             }
 
-            // DRC Section
+            // Dynamic Range Compression Section
             if (!compressor.passthrough) {
-                memcpy(&inCompBuff[0].L, l_dsp_buff, BUF_SIZE);
-                memcpy(&inCompBuff[0].R, r_dsp_buff, BUF_SIZE);
-                sf_compressor_process(&compState, BUF_SIZE, &inCompBuff[0], &outCompBuff[0]);
-                memcpy(l_dsp_buff, &outCompBuff[0].L, BUF_SIZE);
-                memcpy(r_dsp_buff, &outCompBuff[0].R, BUF_SIZE);
+                // subtract 90dB to leave us with a signal that can operate in <0dB range (signed int is 20log(2^15)=90dB)
+                // we do this since max value of sf_compressor_process is 0dB, or 1
+                dsps_mulc_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, MINUS_90_DB, 1, 1);
+                dsps_mulc_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, MINUS_90_DB, 1, 1);
+                for (int i = 0; i < BUF_LEN; i++) {
+                    inCompBuff[i] = (sf_sample_st) { .L = l_dsp_buff[i], .R = r_dsp_buff[i] };
+                }
+                sf_compressor_process(&compState, BUF_LEN, &inCompBuff[0], &outCompBuff[0]);
+                // sf_compressor_process also adds 90dB (post gain) to bring us back to the correct output scale
+                for (int i = 0; i < BUF_LEN; i++) {
+                    l_dsp_buff_out[i] = outCompBuff[i].L;
+                    r_dsp_buff_out[i] = outCompBuff[i].R;
+                }
             }
+
+            //dsps_mulc_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 31622.77, 1, 1);
+            //dsps_mulc_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 31622.77, 1, 1);
 
             //merge two l and r buffers into a mixed buffer and write back to HW
             y = 0;
             for (int i = 0; i < BUF_LEN; i++) {
-                txbuf[y] = (int16_t) l_dsp_buff[i];
-                txbuf[y+1] = (int16_t) r_dsp_buff[i];
+                txbuf[y] = (int16_t) l_dsp_buff_out[i];
+                txbuf[y+1] = (int16_t) r_dsp_buff_out[i];
                 y = y+2;
             }
         
-            //write BUF_SIZE samples to DMA_out
+            //write BUF_BYTES samples to DMA_out
             write_ret = i2s_write(I2S_NUM, &txbuf[0], BUF_BYTES, &write_size, portMAX_DELAY);
             if (write_ret != ESP_OK || write_size != BUF_BYTES) {
                 printf("i2s write failed. write status %d, written bytes %d\n", write_ret, write_size);
@@ -224,9 +181,9 @@ static void i2s_audio_processor(void *args) {
 
 /* static void bt_gatt_server(void *args) {
     while (1) {
-
+        
+        vTaskDelay(1);
     }
-
 } */
 
 void app_main(void) {
@@ -255,8 +212,10 @@ void app_main(void) {
     
     // You can reset parameters by calling 'i2s_set_clk'
 
-    xTaskCreate(i2s_audio_processor, "i2s_audio_processor", 4096, NULL, 2, NULL);
-    //xTaskCreate(bt_gatt_server, "bt_gatt_server", 4096, NULL, 1, NULL);
+    bt_gatt_initialize();
+
+    xTaskCreate(i2s_audio_processor, "i2s_audio_processor", 4096, NULL, 3, NULL);
+    //xTaskCreate(bt_gatt_server, "bt_gatt_server", 4096, NULL, 2, NULL);
 /*     while (1) {
         i2s_event_t evt;
         xQueueReceive(evt_que, &evt, portMAX_DELAY);

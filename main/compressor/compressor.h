@@ -5,8 +5,8 @@
 // dynamics compressor based on WebAudio specification:
 //   https://webaudio.github.io/web-audio-api/#the-dynamicscompressornode-interface
 
-#ifndef SNDFILTER_COMPRESSOR__H
-#define SNDFILTER_COMPRESSOR__H
+//#ifndef SNDFILTER_COMPRESSOR__H
+//#define SNDFILTER_COMPRESSOR__H
 
 //#include "snd.h"
 
@@ -113,4 +113,4 @@ void sf_advancecomp(sf_compressor_state_st *state,
 void sf_compressor_process(sf_compressor_state_st *state, int size, sf_sample_st *input,
 	sf_sample_st *output);
 
-#endif // SNDFILTER_COMPRESSOR__H
+//#endif // SNDFILTER_COMPRESSOR__H

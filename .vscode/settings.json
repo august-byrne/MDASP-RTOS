@@ -11,9 +11,10 @@
     "memory": "c",
     "*.ipp": "c",
     "semphr.h": "c",
-    "dsps_biquad.h": "c"
+    "dsps_biquad.h": "c",
+    "math.h": "c"
   },
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM5",
   "idf.adapterTargetName": "esp32",
   "idf.openOcdConfigs": [
     "interface/ftdi/esp32_devkitj_v1.cfg",
