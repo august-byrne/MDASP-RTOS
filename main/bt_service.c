@@ -33,6 +33,8 @@
 
 #include "sdkconfig.h"
 
+#include "mdasp_main.h"
+
 #define GATTS_TAG "GATTS_DEMO"
 
 ///Declare the static function
@@ -49,7 +51,7 @@ static void gatts_profile_b_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
 #define GATTS_DESCR_UUID_TEST_B     0x2222
 #define GATTS_NUM_HANDLE_TEST_B     4
 
-#define TEST_DEVICE_NAME            "ESP_GATTS_DEMO"
+#define TEST_DEVICE_NAME            "MDASP Audio Processor"
 #define TEST_MANUFACTURER_DATA_LEN  17
 
 #define GATTS_DEMO_CHAR_VAL_LEN_MAX 0x40
@@ -179,9 +181,9 @@ static prepare_type_env_t b_prepare_write_env;
 
 void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param);
 void example_exec_write_event_env(prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param);
+void process_bt_write(uint8_t *val, uint16_t len);
 
-static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
-{
+static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     switch (event) {
 #ifdef CONFIG_SET_RAW_ADV_DATA
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
@@ -237,7 +239,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     }
 }
 
-void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param){
+void example_write_event_env(esp_gatt_if_t gatts_if, prepare_type_env_t *prepare_write_env, esp_ble_gatts_cb_param_t *param) {
     esp_gatt_status_t status = ESP_GATT_OK;
     if (param->write.need_rsp){
         if (param->write.is_prep){
@@ -340,11 +342,10 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         esp_gatt_rsp_t rsp;
         memset(&rsp, 0, sizeof(esp_gatt_rsp_t));
         rsp.attr_value.handle = param->read.handle;
-        rsp.attr_value.len = 4;
-        rsp.attr_value.value[0] = 0xde;
-        rsp.attr_value.value[1] = 0xed;
-        rsp.attr_value.value[2] = 0xbe;
-        rsp.attr_value.value[3] = 0xef;
+        ESP_LOGI("CRUSTACEANS", "this no longer sucks!");
+        rsp.attr_value.len = sizeof(AudioModel);
+        AudioModel audioModel = { .eq = paramEQModel, .compressor = compressorModel};
+        memcpy(rsp.attr_value.value, &audioModel, sizeof(AudioModel));
         esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id,
                                     ESP_GATT_OK, &rsp);
         break;
@@ -354,6 +355,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         if (!param->write.is_prep){
             ESP_LOGI(GATTS_TAG, "GATT_WRITE_EVT, value len %d, value :", param->write.len);
             esp_log_buffer_hex(GATTS_TAG, param->write.value, param->write.len);
+            process_bt_write(param->write.value, param->write.len);
             if (gl_profile_tab[PROFILE_A_APP_ID].descr_handle == param->write.handle && param->write.len == 2){
                 uint16_t descr_value = param->write.value[1]<<8 | param->write.value[0];
                 if (descr_value == 0x0001){
@@ -380,8 +382,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
                         esp_ble_gatts_send_indicate(gatts_if, param->write.conn_id, gl_profile_tab[PROFILE_A_APP_ID].char_handle,
                                                 sizeof(indicate_data), indicate_data, true);
                     }
-                }
-                else if (descr_value == 0x0000){
+                }else if (descr_value == 0x0000){
                     ESP_LOGI(GATTS_TAG, "notify/indicate disable ");
                 }else{
                     ESP_LOGE(GATTS_TAG, "unknown descr value");
@@ -640,8 +641,7 @@ static void gatts_profile_b_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
     }
 }
 
-static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
-{
+static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
     /* If event is register event, store the gatts_if for each profile */
     if (event == ESP_GATTS_REG_EVT) {
         if (param->reg.status == ESP_GATT_OK) {
@@ -669,8 +669,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     } while (0);
 }
 
-static void bt_gatt_initialize(void)
-{
+void bt_gatt_run(void) {
     esp_err_t ret;
 
     // Initialize NVS.
@@ -732,4 +731,125 @@ static void bt_gatt_initialize(void)
     }
 
     return;
+}
+
+void process_bt_write(uint8_t *val, uint16_t len) {
+    uint8_t temp[len];
+    memcpy(temp, val, len);
+    switch(temp[0]) {
+        case 0:     // EQ Variable
+        ESP_LOGI(GATTS_TAG, "EQ -> ");
+            switch(temp[1]) {
+                case 0:     // Passthrough
+                    paramEQModel.passthrough = *(bool *) &temp[2];
+                    ESP_LOGI(GATTS_TAG, "passthrough -> %d\n", paramEQModel.passthrough);
+                    break;
+                case 1:
+                    paramEQModel.hp = *(bool *) &temp[2];
+                    break;
+                case 2:
+                    paramEQModel.hs = *(bool *) &temp[2];
+                    break;
+                case 3:
+                    paramEQModel.br = *(bool *) &temp[2];
+                    break;
+                case 4:
+                    paramEQModel.lp = *(bool *) &temp[2];
+                    break;
+                case 5:
+                    paramEQModel.ls = *(bool *) &temp[2];
+                    break;
+                case 6:
+                    paramEQModel.gain = *(float *) &temp[2];
+                    break;
+                case 7:
+                    paramEQModel.hp_freq = *(float *) &temp[2];
+                    break;
+                case 8:
+                    paramEQModel.hs_freq = *(float *) &temp[2];
+                    break;
+                case 9:
+                    paramEQModel.br_freq = *(float *) &temp[2];
+                    break;
+                case 10:
+                    paramEQModel.lp_freq = *(float *) &temp[2];
+                    break;
+                case 11:
+                    paramEQModel.ls_freq = *(float *) &temp[2];
+                    break;
+                case 12:
+                    paramEQModel.hs_amount = *(float *) &temp[2];
+                    break;
+                case 13:
+                    paramEQModel.br_amount = *(float *) &temp[2];
+                    break;
+                case 14:
+                    paramEQModel.ls_amount = *(float *) &temp[2];
+                    break;                                                                                                 
+            }
+            paramEqUpdate = true;
+            break;
+        case 1:     // Compressor Variable
+            ESP_LOGI(GATTS_TAG, "Compressor ->");
+            switch(temp[1]) {
+                case 0:     // Passthrough
+                    ESP_LOGI(GATTS_TAG, "passthrough -> ");
+                    compressorModel.passthrough = *(bool *) &temp[2];
+                    break;
+                case 1:     // Pregain
+                    ESP_LOGI(GATTS_TAG, "Pregain -> uint32_t %d cast to float %f", *(uint32_t *) &temp[2], *(float *) &temp[2]);
+                    compressorModel.pregain = *(float *) &temp[2];
+                    break;
+                case 2:
+                    compressorModel.threshold = *(float *) &temp[2];
+                    break;
+                case 3:
+                    compressorModel.knee = *(float *) &temp[2];
+                    break;
+                case 4:
+                    compressorModel.ratio = *(float *) &temp[2];
+                    break;
+                case 5:
+                    compressorModel.attack = *(float *) &temp[2];
+                    break;
+                case 6:
+                    compressorModel.release = *(float *) &temp[2];
+                    break;    
+                case 7:
+                    compressorModel.predelay = *(float *) &temp[2];
+                    break;
+                case 8:
+                    compressorModel.releasezone1 = *(float *) &temp[2];
+                    break;
+                case 9:
+                    compressorModel.releasezone2 = *(float *) &temp[2];
+                    break;
+                case 10:
+                    compressorModel.releasezone3 = *(float *) &temp[2];
+                    break;  
+                case 11:
+                    compressorModel.releasezone4 = *(float *) &temp[2];
+                    break;
+                case 12:
+                    compressorModel.postgain = *(float *) &temp[2];
+                    break;
+                case 13:
+                    compressorModel.wet = *(float *) &temp[2];
+                    break;
+            }
+            drcUpdate = true;
+            break;
+    }
+/*     if (len == sizeof(ParametricEQ)) {
+        printf("Wrote new ParametricEQ values\n");
+        //ParametricEQ temp = (ParametricEQ) val;
+        //paramEQModel = (ParametricEQ) val;
+        memcpy(paramEQModel, (ParametricEQ) val, len);
+        //paramEQModel.passthrough = temp.passthrough;
+        paramEqUpdate = true;
+    } else {
+        printf("ParametricEQ type is size %d, but data is size %d\n", sizeof(ParametricEQ), len);
+    } */
+    //bytes[0] = value >> 8;     // high byte (0x12)
+    //bytes[1] = value & 0x00FF; // low byte  (0x34)
 }

@@ -1,3 +1,8 @@
+#ifndef MDASP_MAIN__H
+#define MDASP_MAIN__H
+
+#include <stdbool.h>
+
 #define AUDIO_SAMPLE_RATE   48000           // 48kHz
 #define MINUS_90_DB         0.00003162277f  // -90dB constant
 #define BUF_LEN             256             // buffer length
@@ -18,14 +23,12 @@ typedef struct ParametricEQ {
     bool br;    // band reject
     bool lp;    // low pass
     bool ls;    // low shelf
-
     float gain;
     float hp_freq;
     float hs_freq;
     float br_freq;
     float lp_freq;
     float ls_freq;
-
     float hs_amount;
     float br_amount;
     float ls_amount;
@@ -33,7 +36,6 @@ typedef struct ParametricEQ {
 
 typedef struct AdvancedCompressor {
     bool passthrough;
-
     float pregain;
     float threshold;
     float knee;
@@ -49,43 +51,15 @@ typedef struct AdvancedCompressor {
 	float wet;
 } AdvancedCompressor;
 
+typedef struct AudioModel {
+    struct ParametricEQ eq;
+    struct AdvancedCompressor compressor;
+} AudioModel;
+
 /* Global Variables */
+extern ParametricEQ paramEQModel;
+extern bool paramEqUpdate; //make into mutex
+extern AdvancedCompressor compressorModel;
+extern bool drcUpdate; //make into mutex
 
-extern ParametricEQ paramEQModel = {
-    .passthrough = false,
-    .hp = false,
-    .hs = false,
-    .br = false,
-    .lp = false,
-    .ls = false,
-    .gain = 1.0f,
-    .hp_freq = 0.25f,
-    .hs_freq = 0.25f,
-    .br_freq = 0.25f,
-    .lp_freq = 0.25f,
-    .ls_freq = 0.25f,
-    .hs_amount = 1.0f,
-    .br_amount = 1.0f,
-    .ls_amount = 1.0f
-    };
-
-extern bool paramEqUpdate = true;  //make into mutex
-
-extern AdvancedCompressor compressorModel = {
-    .passthrough = false,
-    .pregain = 0.0f,
-    .threshold = -24.0f,
-    .knee = 30.0f,
-    .ratio = 12.0f,
-    .attack = 0.003f,
-    .release = 0.250f,
-    .predelay = 0.006f,
-	.releasezone1 = 0.090f,
-	.releasezone2 = 0.160f,
-    .releasezone3 = 0.420f,
-	.releasezone4 = 0.980f,
-	.postgain = 0.000f,
-	.wet = 1.000f
-    };
-
-extern bool drcUpdate = true;  //make into mutex
+#endif

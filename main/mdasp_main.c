@@ -10,7 +10,7 @@
 #include "hal/i2s_hal.h"
 #include "esp_dsp.h"
 #include "compressor/compressor.h"
-#include "bt_service.c"
+#include "bt_service.h"
 
 // Audio Buffer Variables
 int16_t rxbuf[BUF_LEN_STEREO], txbuf[BUF_LEN_STEREO];    // stereo samples
@@ -20,6 +20,7 @@ sf_sample_st inCompBuff[BUF_LEN];
 sf_sample_st outCompBuff[BUF_LEN];
 float l_dsp_buff_out[BUF_LEN], r_dsp_buff_out[BUF_LEN];
 
+// Audio effect state variables
 float hp_coeffs[2][5];
 float hs_coeffs[2][5];
 float br_coeffs[2][5];
@@ -30,14 +31,57 @@ static const float CASC_BUTTER_Q[2] = {0.54119610, 1.3065630}; // biquad Q value
 
 sf_compressor_state_st compState;
 
+// Audio effect global variable models
+ParametricEQ paramEQModel = {
+    .passthrough = false,//
+    .hp = false,//
+    .hs = false,
+    .br = false,
+    .lp = false,//
+    .ls = false,
+    .gain = 1.0f,
+    .hp_freq = 0.25f,
+    .hs_freq = 0.25f,
+    .br_freq = 0.25f,
+    .lp_freq = 0.25f,
+    .ls_freq = 0.25f,
+    .hs_amount = 1.0f,
+    .br_amount = 1.0f,
+    .ls_amount = 1.0f
+    };
+
+bool paramEqUpdate = true;  //make into mutex
+
+AdvancedCompressor compressorModel = {
+    .passthrough = false,
+    .pregain = 0.0f,
+    .threshold = -24.0f,
+    .knee = 30.0f,
+    .ratio = 12.0f,
+    .attack = 0.003f,
+    .release = 0.250f,
+    .predelay = 0.006f,
+	.releasezone1 = 0.090f,
+	.releasezone2 = 0.160f,
+    .releasezone3 = 0.420f,
+	.releasezone4 = 0.980f,
+	.postgain = 0.000f,
+	.wet = 1.000f
+    };
+
+bool drcUpdate = true;  //make into mutex
+
+/******************************************************************************************/
+static void i2s_audio_processor(void);
+
 /******************************************************************************************/
  
-static void i2s_audio_processor(void *args) {
+static void i2s_audio_processor(void) {
     size_t read_size;
     size_t write_size;
-    esp_err_t dsp_err;
-    esp_err_t read_ret;
-    esp_err_t write_ret;
+    esp_err_t dsp_err = ESP_OK;
+    esp_err_t read_ret = ESP_OK;
+    esp_err_t write_ret = ESP_OK;
 
     // EQ Variables
     float w1[2][2], w2[2][2];
@@ -50,7 +94,7 @@ static void i2s_audio_processor(void *args) {
     paramEQModel.hp = true;
     paramEQModel.hp_freq = 0.25f;
     paramEQModel.passthrough = true;
-    compressorModel.passthrough = true;
+    compressorModel.passthrough = false;
     compressorModel.pregain = 12.0f;
     compressorModel.postgain = 90.0f;
     compressorModel.threshold = -64.0f;
@@ -137,6 +181,10 @@ static void i2s_audio_processor(void *args) {
                         dsp_err = dsps_biquad_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &ls_coeffs[i][0], &w1[i][0]);
                         dsp_err = dsps_biquad_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &ls_coeffs[i][0], &w2[i][0]);
                     }
+                    if (dsp_err != ESP_OK) {
+                        printf("error with status %d in biquad filtering\n", dsp_err);
+                        break;
+                    }
                 }
             }
 
@@ -179,13 +227,6 @@ static void i2s_audio_processor(void *args) {
     }
 }
 
-/* static void bt_gatt_server(void *args) {
-    while (1) {
-        
-        vTaskDelay(1);
-    }
-} */
-
 void app_main(void) {
     i2s_config_t i2s_config = {
         .mode = I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_TX,
@@ -212,10 +253,9 @@ void app_main(void) {
     
     // You can reset parameters by calling 'i2s_set_clk'
 
-    bt_gatt_initialize();
+    bt_gatt_run();
 
     xTaskCreate(i2s_audio_processor, "i2s_audio_processor", 4096, NULL, 3, NULL);
-    //xTaskCreate(bt_gatt_server, "bt_gatt_server", 4096, NULL, 2, NULL);
 /*     while (1) {
         i2s_event_t evt;
         xQueueReceive(evt_que, &evt, portMAX_DELAY);
