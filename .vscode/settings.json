@@ -20,9 +20,15 @@
     "functional": "c",
     "tuple": "c",
     "type_traits": "c",
-    "utility": "c"
+    "utility": "c",
+    "fastmath.h": "c",
+    "mdasp_main.h": "c",
+    "chrono": "c",
+    "random": "c",
+    "*.tcc": "cpp",
+    "cmath": "cpp"
   },
-  "idf.portWin": "COM5",
+  "idf.portWin": "COM3",
   "idf.adapterTargetName": "esp32",
   "idf.openOcdConfigs": [
     "interface/ftdi/esp32_devkitj_v1.cfg",

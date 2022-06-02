@@ -3,17 +3,18 @@
 
 #include <stdbool.h>
 
-#define AUDIO_SAMPLE_RATE   48000           // 48kHz
-#define MINUS_90_DB         0.00003162277f  // -90dB constant
-#define BUF_LEN             256             // buffer length
-#define BUF_LEN_STEREO     BUF_LEN*2        // buffer length * 2 channels (stereo)
-#define BUF_BYTES    BUF_LEN_STEREO*2       // stereo buffer size * 16-bit (2 bytes)
-#define I2S_NUM             I2S_NUM_0       // i2s port number
-#define I2S_MCK_IO          GPIO_NUM_0      // i2s master clock
-#define I2S_BCK_IO          GPIO_NUM_17     // i2s bit clock
-#define I2S_WS_IO           GPIO_NUM_16     // i2s word select
-#define I2S_DO_IO           GPIO_NUM_18      // i2s data out
-#define I2S_DI_IO           GPIO_NUM_19      // i2s data in
+#define AUDIO_SAMPLE_RATE   48000               // 48kHz
+#define MINUS_90_DB         0.00003162277f      // -90dB definition
+#define PLUS_90_DB          31622.77f           // +90dB definition
+#define BUF_LEN             256                 // buffer length
+#define BUF_LEN_STEREO      BUF_LEN*2           // buffer length * 2 channels (stereo)
+#define BUF_BYTES           BUF_LEN_STEREO*2    // stereo buffer size * 16-bit (2 bytes)
+#define I2S_NUM             I2S_NUM_0           // i2s port number
+#define I2S_MCK_IO          GPIO_NUM_0          // i2s master clock
+#define I2S_BCK_IO          GPIO_NUM_17         // i2s bit clock
+#define I2S_WS_IO           GPIO_NUM_16         // i2s word select
+#define I2S_DO_IO           GPIO_NUM_18         // i2s data out
+#define I2S_DI_IO           GPIO_NUM_19         // i2s data in
 
 
 typedef struct ParametricEQ {
@@ -36,6 +37,7 @@ typedef struct ParametricEQ {
 
 typedef struct AdvancedCompressor {
     bool passthrough;
+    bool makeupgain;
     float pregain;
     float threshold;
     float knee;
@@ -54,12 +56,15 @@ typedef struct AdvancedCompressor {
 typedef struct AudioModel {
     struct ParametricEQ eq;
     struct AdvancedCompressor compressor;
+    float volume;
 } AudioModel;
 
 /* Global Variables */
+extern float volumeModel;   // 0dB to -90dB
+extern bool volumeUpdate;
 extern ParametricEQ paramEQModel;
-extern bool paramEqUpdate; //make into mutex
+extern bool paramEqUpdate;
 extern AdvancedCompressor compressorModel;
-extern bool drcUpdate; //make into mutex
+extern bool drcUpdate;
 
 #endif

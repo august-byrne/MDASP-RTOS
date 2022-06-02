@@ -9,6 +9,7 @@
 #define SNDFILTER_COMPRESSOR__H
 
 //#include "snd.h"
+#include <stdbool.h>
 
 // dynamic range compression is a complex topic with many different algorithms
 //
@@ -105,7 +106,8 @@ void sf_advancecomp(sf_compressor_state_st *state,
 	float releasezone3, //  the adaptive release curve, which is discussed in further detail in the
 	float releasezone4, //  demo: adaptive-release-curve.html
 	float postgain,     // dB, amount of gain to apply after compression [0 to 100]
-	float wet           // amount to apply the effect [0 completely dry to 1 completely wet]
+	float wet,          // amount to apply the effect [0 completely dry to 1 completely wet]
+	bool makeupgain		// use makeupgain or not
 );
 
 // this function will process the input sound based on the state passed

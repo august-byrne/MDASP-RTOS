@@ -344,7 +344,7 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         rsp.attr_value.handle = param->read.handle;
         ESP_LOGI("CRUSTACEANS", "this no longer sucks!");
         rsp.attr_value.len = sizeof(AudioModel);
-        AudioModel audioModel = { .eq = paramEQModel, .compressor = compressorModel};
+        AudioModel audioModel = { .eq = paramEQModel, .compressor = compressorModel, .volume = volumeModel};
         memcpy(rsp.attr_value.value, &audioModel, sizeof(AudioModel));
         esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id,
                                     ESP_GATT_OK, &rsp);
@@ -836,20 +836,21 @@ void process_bt_write(uint8_t *val, uint16_t len) {
                 case 13:
                     compressorModel.wet = *(float *) &temp[2];
                     break;
+                case 14:
+                    compressorModel.makeupgain = *(bool *) &temp[2];
+                    break;
             }
             drcUpdate = true;
             break;
+        case 2:     // Volume
+            switch(temp[1]) {
+                case 0:
+                    volumeModel = *(float *) &temp[2];
+                    break;
+            }
+            volumeUpdate = true;
+            break;
     }
-/*     if (len == sizeof(ParametricEQ)) {
-        printf("Wrote new ParametricEQ values\n");
-        //ParametricEQ temp = (ParametricEQ) val;
-        //paramEQModel = (ParametricEQ) val;
-        memcpy(paramEQModel, (ParametricEQ) val, len);
-        //paramEQModel.passthrough = temp.passthrough;
-        paramEqUpdate = true;
-    } else {
-        printf("ParametricEQ type is size %d, but data is size %d\n", sizeof(ParametricEQ), len);
-    } */
     //bytes[0] = value >> 8;     // high byte (0x12)
     //bytes[1] = value & 0x00FF; // low byte  (0x34)
 }

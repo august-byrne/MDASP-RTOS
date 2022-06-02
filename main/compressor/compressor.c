@@ -27,7 +27,8 @@ void sf_defaultcomp(sf_compressor_state_st *state, int rate){
 		  0.420f, // releasezone3
 		  0.980f, // releasezone4
 		  0.000f, // postgain
-		  1.000f  // wet
+		  1.000f, // wet
+		  true	  // makeup gain
 	);
 }
 
@@ -41,12 +42,25 @@ void sf_simplecomp(sf_compressor_state_st *state, int rate, float pregain, float
 		0.420f, // releasezone3
 		0.980f, // releasezone4
 		0.000f, // postgain
-		1.000f  // wet
+		1.000f, // wet
+		true	// makeup gain
 	);
 }
 
+float powf_fast(float a, float b) {
+	union { float d; int x; } u = { a };
+	u.x = (int)(b * (u.x - 1064866805) + 1064866805);
+	return u.d;
+}
+
+inline float fast_exp(float x) {
+    union { uint32_t i; float f; } v = {};
+    v.i = (1 << 23) * (1.4426950409 * x + 126.93490512f);
+    return v.f;
+}
+
 static inline float db2lin(float db){ // dB to linear
-	return powf(10.0f, 0.05f * db);
+	return exp10f(0.05 * db);//powf(10.0f, 0.05f * db);
 }
 
 static inline float lin2db(float lin){ // linear to dB
@@ -56,11 +70,11 @@ static inline float lin2db(float lin){ // linear to dB
 // for more information on the knee curve, check out the compressor-curve.html demo + source code
 // included in this repo
 static inline float kneecurve(float x, float k, float linearthreshold){
-	return linearthreshold + (1.0f - expf(-k * (x - linearthreshold))) / k;
+	return linearthreshold + (1.0f - fast_exp(-k * (x - linearthreshold))) / k;
 }
 
 static inline float kneeslope(float x, float k, float linearthreshold){
-	return k * x / ((k * linearthreshold + 1.0f) * expf(k * (x - linearthreshold)) - 1);
+	return k * x / ((k * linearthreshold + 1.0f) * fast_exp(k * (x - linearthreshold)) - 1);
 }
 
 static inline float compcurve(float x, float k, float slope, float linearthreshold,
@@ -78,7 +92,8 @@ static inline float compcurve(float x, float k, float slope, float linearthresho
 // it does a bunch of pre-calculation so that the inner loop of signal processing is fast
 void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, float threshold,
 	float knee, float ratio, float attack, float release, float predelay, float releasezone1,
-	float releasezone2, float releasezone3, float releasezone4, float postgain, float wet){
+	float releasezone2, float releasezone3, float releasezone4, float postgain, float wet,
+	bool makeupgain){
 
 	// setup the predelay buffer
 	int delaybufsize = rate * predelay;
@@ -100,9 +115,9 @@ void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, floa
 	float dry = 1.0f - wet;
 
 	// metering values (not used in core algorithm, but used to output a meter if desired)
-	float metergain = 1.0f; // gets overwritten immediately because gain will always be negative
+/* 	float metergain = 1.0f; // gets overwritten immediately because gain will always be negative
 	float meterfalloff = 0.325f; // seconds
-	float meterrelease = 1.0f - expf(-1.0f / ((float)rate * meterfalloff));
+	float meterrelease = 1.0f - fast_exp(-1.0f / ((float)rate * meterfalloff)); */
 
 	// calculate knee curve parameters
 	float k = 5.0f; // initial guess
@@ -124,10 +139,15 @@ void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, floa
 		linearthresholdknee = db2lin(threshold + knee);
 	}
 
-	// calculate a master gain based on what sounds good
-	float fulllevel = compcurve(1.0f, k, slope, linearthreshold, linearthresholdknee,
-		threshold, knee, kneedboffset);
-	float mastergain = db2lin(postgain) * powf(1.0f / fulllevel, 0.6f);
+	// calculate a master gain based on what sounds good, or remove makeup gain
+	float mastergain;
+	if (makeupgain) {
+		float fulllevel = compcurve(1.0f, k, slope, linearthreshold, linearthresholdknee,
+			threshold, knee, kneedboffset);
+		mastergain = db2lin(postgain) * powf_fast(1.0f / fulllevel, 0.6f);
+	} else {
+		mastergain = db2lin(postgain);
+	}
 
 	// calculate the adaptive release curve parameters
 	// solve a,b,c,d in `y = a*x^3 + b*x^2 + c*x + d`
@@ -142,8 +162,8 @@ void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, floa
 	float d = y1;
 
 	// save everything
-	state->metergain            = 1.0f; // large value overwritten immediately since it's always < 0
-	state->meterrelease         = meterrelease;
+	//state->metergain            = 1.0f; // large value overwritten immediately since it's always < 0
+	//state->meterrelease         = meterrelease;
 	state->threshold            = threshold;
 	state->knee                 = knee;
 	state->wet                  = wet;
@@ -196,8 +216,8 @@ void sf_compressor_process(sf_compressor_state_st *state, int size, sf_sample_st
 	sf_sample_st *output){
 
 	// pull out the state into local variables
-	float metergain            = state->metergain;
-	float meterrelease         = state->meterrelease;
+	//float metergain            = state->metergain;
+	//float meterrelease         = state->meterrelease;
 	float threshold            = state->threshold;
 	float knee                 = state->knee;
 	float linearpregain        = state->linearpregain;
@@ -254,7 +274,7 @@ void sf_compressor_process(sf_compressor_state_st *state, int size, sf_sample_st
 			float attenuate = maxcompdiffdb;
 			if (attenuate < 0.5f)
 				attenuate = 0.5f;
-			enveloperate = 1.0f - powf(0.25f / attenuate, attacksamplesinv);
+			enveloperate = 1.0f - powf_fast(0.25f / attenuate, attacksamplesinv);
 		}
 
 		// process the chunk
@@ -308,11 +328,11 @@ void sf_compressor_process(sf_compressor_state_st *state, int size, sf_sample_st
 			float gain = dry + wet * mastergain * premixgain;
 
 			// calculate metering (not used in core algo, but used to output a meter if desired)
-			float premixgaindb = lin2db(premixgain);
+/* 			float premixgaindb = lin2db(premixgain);
 			if (premixgaindb < metergain)
 				metergain = premixgaindb; // spike immediately
 			else
-				metergain += (premixgaindb - metergain) * meterrelease; // fall slowly
+				metergain += (premixgaindb - metergain) * meterrelease; // fall slowly */
 
 			// apply the gain
 			output[samplepos] = (sf_sample_st){
@@ -322,7 +342,7 @@ void sf_compressor_process(sf_compressor_state_st *state, int size, sf_sample_st
 		}
 	}
 
-	state->metergain     = metergain;
+	//state->metergain     = metergain;
 	state->detectoravg   = detectoravg;
 	state->compgain      = compgain;
 	state->maxcompdiffdb = maxcompdiffdb;
