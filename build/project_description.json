@@ -8,7 +8,7 @@
     "app_bin":            "MDASP.bin",
     "git_revision":       "v4.4.1-dirty",
     "target":             "esp32",
-    "rev":                "0",
+    "rev":                "3",
     "phy_data_partition": "",
     "monitor_baud" :      "115200",
     "monitor_toolprefix": "xtensa-esp32-elf-",

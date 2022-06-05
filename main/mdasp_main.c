@@ -19,22 +19,22 @@ static inline float db2lin(float db){ // dB to linear
 }
 
 // Audio Buffer Variables
-int16_t rxbuf[BUF_LEN_STEREO], txbuf[BUF_LEN_STEREO];    // stereo samples
+int16_t txbuf[BUF_LEN_STEREO];                      // output stereo samples
+int16_t delaybuf[BUF_LEN_STEREO*(1+msDelayMax)];    // (delayed) input stereo samples
 
 float l_dsp_buff[BUF_LEN], r_dsp_buff[BUF_LEN];
-sf_sample_st inCompBuff[BUF_LEN];
-sf_sample_st outCompBuff[BUF_LEN];
+sf_sample_st comp_buff[BUF_LEN];                    // compressor buffer
 
-// Audio effect state variables
-float hp_coeffs[2][6];
-float hs_coeffs[2][6];
-float br_coeffs[2][6];
-float lp_coeffs[2][6];
-float ls_coeffs[2][6];
+// EQ coefficients
+float hs_coeffs[2][6], ls_coeffs[2][6];
 
-static const float CASC_BUTTER_Q[2] = {0.54119610, 1.3065630}; // biquad Q values to obtain 4th order butterworth response
+// Q values for cascading biquadratic filters to obtain 4th order butterworth response
+static const float CASC_BUTTER_Q[2] = {0.54119610, 1.3065630};
 
-float volumeModel = -20.0f;
+uint32_t msDelayModel = 0;
+bool delayUpdate = false;
+
+float volumeModel = -30.0f;
 bool volumeUpdate = false;
 
 sf_compressor_state_st compState;
@@ -67,8 +67,8 @@ AdvancedCompressor compressorModel = {
     .threshold = -24.0f,
     .knee = 30.0f,
     .ratio = 12.0f,
-    .attack = 0.003f,
-    .release = 0.250f,
+    .attack = 0.003f,           // FL Maximus audio preset for attack = 0.002f;
+    .release = 0.250f,          // FL Maximus audio preset for release = 0.01f;
     .predelay = 0.006f,
 	.releasezone1 = 0.090f,
 	.releasezone2 = 0.160f,
@@ -81,24 +81,23 @@ AdvancedCompressor compressorModel = {
 bool drcUpdate = false;
 
 /******************************************************************************************/
-static void i2s_audio_processor(void);
+void i2s_audio_processor(void);
 
 /******************************************************************************************/
  
-static void i2s_audio_processor(void) {
+void i2s_audio_processor(void) {
     size_t read_size;
     size_t write_size;
-    esp_err_t dsp_err = ESP_OK;
     esp_err_t read_ret = ESP_OK;
     esp_err_t write_ret = ESP_OK;
 
-    // EQ Variables
-    float w1[10][2], w2[10][2];
-    memset(w1, 0, sizeof(w1));
-    memset(w2, 0, sizeof(w2));
+    uint16_t delayreadpos = 0;
+    uint16_t delaywritepos = 0;
+    uint32_t delaybufsize = 1;
 
-    //compressorModel.attack = 0.002f;
-    //compressorModel.release = 0.01f;
+    // EQ Variables
+    float w[20][2]; // used to store previous inputs for filters
+    memset(w, 0, sizeof(w));
 
     float dbVolume = volumeModel;
     AdvancedCompressor compressor = compressorModel;
@@ -106,48 +105,36 @@ static void i2s_audio_processor(void) {
 
     float linearVolume = db2lin(dbVolume);
 
-    dsp_trap_state_gen_f32(&hp_coeffs[0][0], paramEQ.hp_freq, CASC_BUTTER_Q[0], 0);
-    dsp_trap_state_gen_f32(&hp_coeffs[1][0], paramEQ.hp_freq, CASC_BUTTER_Q[1], 0);
     dsp_trap_state_gen_f32(&hs_coeffs[0][0], paramEQ.hs_freq, CASC_BUTTER_Q[0], 8);
     dsp_trap_state_gen_f32(&hs_coeffs[1][0], paramEQ.hs_freq, CASC_BUTTER_Q[1], 8);
-    dsp_trap_state_gen_f32(&br_coeffs[0][0], paramEQ.br_freq, CASC_BUTTER_Q[0], 3);
-    dsp_trap_state_gen_f32(&br_coeffs[1][0], paramEQ.br_freq, CASC_BUTTER_Q[1], 3);
     dsp_trap_state_gen_f32(&ls_coeffs[0][0], paramEQ.ls_freq, CASC_BUTTER_Q[0], 7);
     dsp_trap_state_gen_f32(&ls_coeffs[1][0], paramEQ.ls_freq, CASC_BUTTER_Q[1], 7);
-    dsp_trap_state_gen_f32(&lp_coeffs[0][0], paramEQ.lp_freq, CASC_BUTTER_Q[0], 2);
-    dsp_trap_state_gen_f32(&lp_coeffs[1][0], paramEQ.lp_freq, CASC_BUTTER_Q[1], 2);
 
-
-    sf_advancecomp(
-    &compState, 
-    AUDIO_SAMPLE_RATE,
-    compressor.pregain,
-    compressor.threshold,
-    compressor.knee,
-    compressor.ratio,
-    compressor.attack,
-    compressor.release,
-    compressor.predelay,
-    compressor.releasezone1,
-    compressor.releasezone2,
-    compressor.releasezone3,
-    compressor.releasezone4,
-    compressor.postgain,
-    compressor.wet,
-    compressor.makeupgain
-    );
+    sf_defaultcomp(&compState, AUDIO_SAMPLE_RATE);
 
     while (1) {
 
+        if (delayUpdate) {
+            if (delaybufsize != (1 + msDelayModel)) {
+                delaybufsize = (1 + msDelayModel);
+                delaywritepos = 0;
+                delayreadpos = delaybufsize > 1 ? BUF_LEN_STEREO : 0;
+            }
+        }
+        
         // read stereo samples from DMA_in
-        read_ret = i2s_read(I2S_NUM, &rxbuf[0], BUF_BYTES, &read_size, portMAX_DELAY);
+        read_ret = i2s_read(I2S_NUM, &delaybuf[delaywritepos], BUF_BYTES, &read_size, portMAX_DELAY);
+        //increment delay positions
+		delayreadpos = (delayreadpos + BUF_LEN_STEREO) % (delaybufsize*BUF_LEN_STEREO);
+		delaywritepos = (delaywritepos + BUF_LEN_STEREO) % (delaybufsize*BUF_LEN_STEREO);
+        //read_ret = i2s_read(I2S_NUM, &rxbuf[0], BUF_BYTES, &read_size, portMAX_DELAY);
         if (read_ret == ESP_OK && read_size == BUF_BYTES) {
 
             // extract stereo samples to mono buffers
             int y = 0;
             for (int i = 0; i < BUF_LEN_STEREO; i = i+2) {
-                l_dsp_buff[y] = (float) rxbuf[i];
-                r_dsp_buff[y] = (float) rxbuf[i+1];
+                l_dsp_buff[y] = (float) delaybuf[delayreadpos+i];//rxbuf[i];
+                r_dsp_buff[y] = (float) delaybuf[delayreadpos+(i+1)];//rxbuf[i+1];
                 y++;
             }
 
@@ -158,40 +145,27 @@ static void i2s_audio_processor(void) {
             }
 
             // subtract 90dB to leave us with a signal that can operate in <0dB range (signed int is 20log(2^15)=90dB)
-            // we do this since max value of sf_compressor_process is 0dB, or 1. Then add volume db (multiply linear volume)
+            // we do this since max value of sf_compressor_process is 0dB, or 1. Volume control is also here (multiply linear volume)
             dsps_mulc_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, MINUS_90_DB * linearVolume, 1, 1);
             dsps_mulc_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, MINUS_90_DB * linearVolume, 1, 1);
 
             // Generate IIR Coefficients for 4th order Butterworth Filters
+            // NO LONGER ARE WE TETHERED TO (most) GROSS COEFFICIENTS
             if (paramEqUpdate) {
-                paramEqUpdate = false; // mutex write
-                if (paramEQ.hp_freq != paramEQModel.hp_freq) {
-                    paramEQ = paramEQModel;
-                    dsp_trap_state_gen_f32(&hp_coeffs[0][0], paramEQ.hp_freq, CASC_BUTTER_Q[0], 0);
-                    dsp_trap_state_gen_f32(&hp_coeffs[1][0], paramEQ.hp_freq, CASC_BUTTER_Q[1], 0);
-                } else if (paramEQ.hs_freq != paramEQModel.hs_freq || paramEQ.hs_amount != paramEQModel.hs_amount) {
+                paramEqUpdate = false;
+                if (paramEQ.hs_freq != paramEQModel.hs_freq || paramEQ.hs_amount != paramEQModel.hs_amount) {
                     paramEQ = paramEQModel;
                     dsp_trap_state_gen_f32(&hs_coeffs[0][0], paramEQ.hs_freq, CASC_BUTTER_Q[0], 8);
                     dsp_trap_state_gen_f32(&hs_coeffs[1][0], paramEQ.hs_freq, CASC_BUTTER_Q[1], 8);
-                }
-                if (paramEQ.br_freq != paramEQModel.br_freq || paramEQ.br_amount != paramEQModel.br_amount) {
-                    paramEQ = paramEQModel;
-                    dsp_trap_state_gen_f32(&br_coeffs[0][0], paramEQ.br_freq, CASC_BUTTER_Q[0], 3);
-                    dsp_trap_state_gen_f32(&br_coeffs[1][0], paramEQ.br_freq, CASC_BUTTER_Q[1], 3);
                 }
                 if (paramEQ.ls_freq != paramEQModel.ls_freq || paramEQ.ls_amount != paramEQModel.ls_amount) {
                     paramEQ = paramEQModel;
                     dsp_trap_state_gen_f32(&ls_coeffs[0][0], paramEQ.ls_freq, CASC_BUTTER_Q[0], 7);
                     dsp_trap_state_gen_f32(&ls_coeffs[1][0], paramEQ.ls_freq, CASC_BUTTER_Q[1], 7);
-                } else if (paramEQ.lp_freq != paramEQModel.lp_freq) {
-                    paramEQ = paramEQModel;
-                    dsp_trap_state_gen_f32(&lp_coeffs[0][0], paramEQ.lp_freq, CASC_BUTTER_Q[0], 2);
-                    dsp_trap_state_gen_f32(&lp_coeffs[1][0], paramEQ.lp_freq, CASC_BUTTER_Q[1], 2);
-
                 }
                 paramEQ = paramEQModel;
             }
-            // Generate DRC values
+            // Generate new DRC parameters
             if (drcUpdate) {
                 drcUpdate = false;
                 compressor = compressorModel;
@@ -213,54 +187,49 @@ static void i2s_audio_processor(void) {
                     compressor.wet,
                     compressor.makeupgain
                 );
-                //sf_defaultcomp(&compState, AUDIO_SAMPLE_RATE);
             }
 
             // Parametric EQ Filtering Section
             if (!paramEQ.passthrough) {
                 if (paramEQ.hp) {
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hp_coeffs[0][0], &w1[0][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hp_coeffs[0][0], &w2[0][0]);
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hp_coeffs[1][0], &w1[1][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hp_coeffs[1][0], &w2[1][0]);
-                } else if (paramEQ.hs) {
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hs_coeffs[0][0], &w1[2][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hs_coeffs[0][0], &w2[2][0]);
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hs_coeffs[1][0], &w1[3][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hs_coeffs[1][0], &w2[3][0]);
+                    dsp_otf_state_filt_f32_sine(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 0, paramEQ.hp_freq, CASC_BUTTER_Q[0], &w[0][0]);
+                    dsp_otf_state_filt_f32_sine(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 0, paramEQ.hp_freq, CASC_BUTTER_Q[0], &w[1][0]);
+                    dsp_otf_state_filt_f32_sine(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 0, paramEQ.hp_freq, CASC_BUTTER_Q[1], &w[2][0]);
+                    dsp_otf_state_filt_f32_sine(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 0, paramEQ.hp_freq, CASC_BUTTER_Q[1], &w[3][0]);
+                }  else if (paramEQ.ls) {
+                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &ls_coeffs[0][0], &w[16][0]);
+                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &ls_coeffs[0][0], &w[17][0]);
+                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &ls_coeffs[1][0], &w[18][0]);
+                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &ls_coeffs[1][0], &w[19][0]);
                 }
                 if (paramEQ.br) {
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &br_coeffs[0][0], &w1[4][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &br_coeffs[0][0], &w2[4][0]);
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &br_coeffs[1][0], &w1[5][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &br_coeffs[1][0], &w2[5][0]);
+                    dsp_otf_state_filt_f32_sine(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 3, paramEQ.br_freq, CASC_BUTTER_Q[0], &w[8][0]);
+                    dsp_otf_state_filt_f32_sine(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 3, paramEQ.br_freq, CASC_BUTTER_Q[0], &w[9][0]);
+                    dsp_otf_state_filt_f32_sine(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 3, paramEQ.br_freq, CASC_BUTTER_Q[1], &w[10][0]);
+                    dsp_otf_state_filt_f32_sine(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 3, paramEQ.br_freq, CASC_BUTTER_Q[1], &w[11][0]);
                 }
                 if (paramEQ.lp) {
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &lp_coeffs[0][0], &w1[6][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &lp_coeffs[0][0], &w2[6][0]);
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &lp_coeffs[1][0], &w1[7][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &lp_coeffs[1][0], &w2[7][0]);
-                } else if (paramEQ.ls) {
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &ls_coeffs[0][0], &w1[8][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &ls_coeffs[0][0], &w2[8][0]);
-                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &ls_coeffs[1][0], &w1[9][0]);
-                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &ls_coeffs[1][0], &w2[9][0]);
-                }
-                if (dsp_err != ESP_OK) {
-                    printf("error with status %d in biquad filtering\n", dsp_err);
-                    break;
+                    dsp_otf_state_filt_f32_sine(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 2, paramEQ.lp_freq, CASC_BUTTER_Q[0], &w[12][0]);
+                    dsp_otf_state_filt_f32_sine(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 2, paramEQ.lp_freq, CASC_BUTTER_Q[0], &w[13][0]);
+                    dsp_otf_state_filt_f32_sine(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, 2, paramEQ.lp_freq, CASC_BUTTER_Q[1], &w[14][0]);
+                    dsp_otf_state_filt_f32_sine(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, 2, paramEQ.lp_freq, CASC_BUTTER_Q[1], &w[15][0]);
+                } else if (paramEQ.hs) {
+                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hs_coeffs[0][0], &w[4][0]);
+                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hs_coeffs[0][0], &w[5][0]);
+                    dsp_trap_state_filt_f32_ansi(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, &hs_coeffs[1][0], &w[6][0]);
+                    dsp_trap_state_filt_f32_ansi(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, &hs_coeffs[1][0], &w[7][0]);
                 }
             }
 
             // Dynamic Range Compression Section
             if (!compressor.passthrough) {
                 for (int i = 0; i < BUF_LEN; i++) {
-                    inCompBuff[i] = (sf_sample_st) { .L = l_dsp_buff[i], .R = r_dsp_buff[i] };
+                    comp_buff[i] = (sf_sample_st) { .L = l_dsp_buff[i], .R = r_dsp_buff[i] };
                 }
-                sf_compressor_process(&compState, BUF_LEN, &inCompBuff[0], &outCompBuff[0]);
+                sf_compressor_process(&compState, BUF_LEN, &comp_buff[0], &comp_buff[0]);
                 for (int i = 0; i < BUF_LEN; i++) {
-                    l_dsp_buff[i] = outCompBuff[i].L;
-                    r_dsp_buff[i] = outCompBuff[i].R;
+                    l_dsp_buff[i] = comp_buff[i].L;
+                    r_dsp_buff[i] = comp_buff[i].R;
                 }
             }
 
@@ -268,7 +237,7 @@ static void i2s_audio_processor(void) {
             dsps_mulc_f32_ae32(&l_dsp_buff[0], &l_dsp_buff[0], BUF_LEN, PLUS_90_DB, 1, 1);
             dsps_mulc_f32_ae32(&r_dsp_buff[0], &r_dsp_buff[0], BUF_LEN, PLUS_90_DB, 1, 1);
 
-            //merge two l and r buffers into a mixed buffer and write back to HW
+            //merge l and r buffers into a mixed buffer for i2s
             y = 0;
             for (int i = 0; i < BUF_LEN; i++) {
                 txbuf[y] = (int16_t) l_dsp_buff[i];
@@ -276,7 +245,7 @@ static void i2s_audio_processor(void) {
                 y = y+2;
             }
         
-            //write BUF_BYTES samples to DMA_out
+            //write BUF_BYTES number of samples to DMA_out
             write_ret = i2s_write(I2S_NUM, &txbuf[0], BUF_BYTES, &write_size, portMAX_DELAY);
             if (write_ret != ESP_OK || write_size != BUF_BYTES) {
                 printf("i2s write failed. write status %d, written bytes %d\n", write_ret, write_size);
@@ -288,7 +257,7 @@ static void i2s_audio_processor(void) {
 }
 
 void app_main(void) {
-    esp_log_level_set("*", ESP_LOG_ERROR);        // set all components to ERROR level
+    esp_log_level_set("*", ESP_LOG_ERROR);      // set all components to ERROR level
     i2s_config_t i2s_config = {
         .mode = I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_TX,
         .sample_rate = AUDIO_SAMPLE_RATE,
@@ -298,7 +267,7 @@ void app_main(void) {
         .tx_desc_auto_clear = true,
         .use_apll = true,
         .dma_buf_count = 8,
-        .dma_buf_len = 128,    // # frames per DMA buffer. frame size = # channels * bytes per sample
+        .dma_buf_len = 64,//128,    // # frames per DMA buffer. frame size = # channels * bytes per sample
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1
     };
     i2s_pin_config_t pin_config = {
@@ -311,7 +280,6 @@ void app_main(void) {
     //QueueHandle_t evt_que; //use in place of NULL in driver to see if you ever loose data
     i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL);// &evt_que);
     i2s_set_pin(I2S_NUM, &pin_config);
-    
     // You can reset parameters by calling 'i2s_set_clk'
 
     bt_gatt_run();

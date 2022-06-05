@@ -36,7 +36,7 @@
 
 // samples per update; the compressor works by dividing the input chunks into even smaller sizes,
 // and performs heavier calculations after each mini-chunk to adjust the final envelope
-#define SF_COMPRESSOR_SPU        32
+#define SF_COMPRESSOR_SPU        48//32
 
 // not sure what this does exactly, but it is part of the release curve
 #define SF_COMPRESSOR_SPACINGDB  5.0f

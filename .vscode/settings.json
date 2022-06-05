@@ -26,7 +26,8 @@
     "chrono": "c",
     "random": "c",
     "*.tcc": "cpp",
-    "cmath": "cpp"
+    "cmath": "cpp",
+    "complex": "c"
   },
   "idf.portWin": "COM3",
   "idf.adapterTargetName": "esp32",

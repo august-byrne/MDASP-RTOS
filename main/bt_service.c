@@ -344,7 +344,12 @@ static void gatts_profile_a_event_handler(esp_gatts_cb_event_t event, esp_gatt_i
         rsp.attr_value.handle = param->read.handle;
         ESP_LOGI("CRUSTACEANS", "this no longer sucks!");
         rsp.attr_value.len = sizeof(AudioModel);
-        AudioModel audioModel = { .eq = paramEQModel, .compressor = compressorModel, .volume = volumeModel};
+        AudioModel audioModel = {
+            .eq = paramEQModel,
+            .compressor = compressorModel,
+            .volume = volumeModel,
+            .delay = msDelayModel
+        };
         memcpy(rsp.attr_value.value, &audioModel, sizeof(AudioModel));
         esp_ble_gatts_send_response(gatts_if, param->read.conn_id, param->read.trans_id,
                                     ESP_GATT_OK, &rsp);
@@ -849,6 +854,14 @@ void process_bt_write(uint8_t *val, uint16_t len) {
                     break;
             }
             volumeUpdate = true;
+            break;
+        case 3:     // Delay
+            switch(temp[1]) {
+                case 0:
+                    msDelayModel = *(uint32_t *) &temp[2];
+                    break;
+            }
+            delayUpdate = true;
             break;
     }
     //bytes[0] = value >> 8;     // high byte (0x12)

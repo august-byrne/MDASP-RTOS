@@ -47,7 +47,7 @@ void sf_simplecomp(sf_compressor_state_st *state, int rate, float pregain, float
 	);
 }
 
-float powf_fast(float a, float b) {
+/* float powf_fast(float a, float b) {
 	union { float d; int x; } u = { a };
 	u.x = (int)(b * (u.x - 1064866805) + 1064866805);
 	return u.d;
@@ -57,7 +57,7 @@ inline float fast_exp(float x) {
     union { uint32_t i; float f; } v = {};
     v.i = (1 << 23) * (1.4426950409 * x + 126.93490512f);
     return v.f;
-}
+} */
 
 static inline float db2lin(float db){ // dB to linear
 	return exp10f(0.05 * db);//powf(10.0f, 0.05f * db);
@@ -70,11 +70,11 @@ static inline float lin2db(float lin){ // linear to dB
 // for more information on the knee curve, check out the compressor-curve.html demo + source code
 // included in this repo
 static inline float kneecurve(float x, float k, float linearthreshold){
-	return linearthreshold + (1.0f - fast_exp(-k * (x - linearthreshold))) / k;
+	return linearthreshold + (1.0f - expf(-k * (x - linearthreshold))) / k;
 }
 
 static inline float kneeslope(float x, float k, float linearthreshold){
-	return k * x / ((k * linearthreshold + 1.0f) * fast_exp(k * (x - linearthreshold)) - 1);
+	return k * x / ((k * linearthreshold + 1.0f) * expf(k * (x - linearthreshold)) - 1);
 }
 
 static inline float compcurve(float x, float k, float slope, float linearthreshold,
@@ -144,7 +144,7 @@ void sf_advancecomp(sf_compressor_state_st *state, int rate, float pregain, floa
 	if (makeupgain) {
 		float fulllevel = compcurve(1.0f, k, slope, linearthreshold, linearthresholdknee,
 			threshold, knee, kneedboffset);
-		mastergain = db2lin(postgain) * powf_fast(1.0f / fulllevel, 0.6f);
+		mastergain = db2lin(postgain) * powf(1.0f / fulllevel, 0.6f);
 	} else {
 		mastergain = db2lin(postgain);
 	}
@@ -274,7 +274,7 @@ void sf_compressor_process(sf_compressor_state_st *state, int size, sf_sample_st
 			float attenuate = maxcompdiffdb;
 			if (attenuate < 0.5f)
 				attenuate = 0.5f;
-			enveloperate = 1.0f - powf_fast(0.25f / attenuate, attacksamplesinv);
+			enveloperate = 1.0f - powf(0.25f / attenuate, attacksamplesinv);
 		}
 
 		// process the chunk
